@@ -1,5 +1,4 @@
-from langchain.schema import SystemMessage, HumanMessage
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
