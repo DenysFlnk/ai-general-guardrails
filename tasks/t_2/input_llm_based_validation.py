@@ -1,4 +1,4 @@
-from langchain.schema import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.messages import BaseMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate

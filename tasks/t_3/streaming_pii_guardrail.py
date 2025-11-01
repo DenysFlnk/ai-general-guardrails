@@ -1,5 +1,5 @@
 import re
-from langchain.schema import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 from presidio_analyzer import AnalyzerEngine
