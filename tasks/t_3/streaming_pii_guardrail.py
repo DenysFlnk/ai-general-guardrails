@@ -1,5 +1,6 @@
 import re
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from presidio_analyzer import AnalyzerEngine
 from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -10,52 +11,55 @@ from tasks._constants import OPENAI_API_KEY
 
 
 class PresidioStreamingPIIGuardrail:
+    def __init__(self, buffer_size: int = 100, safety_margin: int = 20):
+        config = {
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+        }
+        provider = NlpEngineProvider(nlp_configuration=config)
 
-    def __init__(self, buffer_size: int =100, safety_margin: int = 20):
-        #TODO:
-        # 1. Create dict with language configurations: {"nlp_engine_name": "spacy","models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]}
-        #    Read more about it here: https://microsoft.github.io/presidio/tutorial/05_languages/
-        # 2. Create NlpEngineProvider with created configurations
-        # 3. Create AnalyzerEngine, as `nlp_engine` crate engine by crated provider (will be used as obj var later)
-        # 4. Create AnonymizerEngine (will be used as obj var later)
-        # 5. Create buffer as empty string (here we will accumulate chunks content and process it, will be used as obj var late)
-        # 6. Create buffer_size as `buffer_size` (will be used as obj var late)
-        # 7. Create safety_margin as `safety_margin` (will be used as obj var late)
-        raise NotImplementedError
+        self.analyzer = AnalyzerEngine(nlp_engine=provider.create_engine())
+        self.anonymizer = AnonymizerEngine()
+        self.buffer = ""
+        self.buffer_size = buffer_size
+        self.safety_margin = safety_margin
 
     def process_chunk(self, chunk: str) -> str:
-        #TODO:
-        # 1. Check if chunk is present, if not then return chunk itself
-        # 2. Accumulate chunk to `buffer`
+        if not chunk:
+            return chunk
+
+        self.buffer += chunk
 
         if len(self.buffer) > self.buffer_size:
             safe_length = len(self.buffer) - self.safety_margin
             for i in range(safe_length - 1, max(0, safe_length - 20), -1):
-                if self.buffer[i] in ' \n\t.,;:!?':
+                if self.buffer[i] in " \n\t.,;:!?":
                     safe_length = i
                     break
 
             text_to_process = self.buffer[:safe_length]
 
-            #TODO:
-            # 1. Get results with analyzer by method analyze, text is `text_to_process`, language is 'en'
-            # 2. Anonymize content, use anonymizer method anonymize with such params:
-            #       - text=text_to_process
-            #       - analyzer_results=results
-            # 3. Set `buffer` as `buffer[safe_length:]`
-            # 4. Return anonymized text
-            raise NotImplementedError
+            results = self.analyzer.analyze(text=text_to_process, language="en")
+            anonymized_text = self.anonymizer.anonymize(
+                text=text_to_process, analyzer_results=results
+            )
+            self.buffer = self.buffer[safe_length:]
+            return anonymized_text.text
 
         return ""
 
     def finalize(self) -> str:
-        #TODO:
-        # 1. Check if `buffer` is present, otherwise return empty string
-        # 2. Analyze `buffer`
-        # 3. Anonymize `buffer` with analyzed results
-        # 4. Set `buffer` as empty string
-        # 5. Return anonymized text
-        raise NotImplementedError
+        if not self.buffer:
+            return ""
+
+        result = self.analyzer.analyze(text=self.buffer, language="en")
+        anonymized_text = self.anonymizer.anonymize(
+            text=self.buffer, analyzer_results=result
+        )
+
+        self.buffer = ""
+
+        return anonymized_text.text
 
 
 class StreamingPIIGuardrail:
@@ -66,7 +70,7 @@ class StreamingPIIGuardrail:
     PII that might be split across chunk boundaries.
     """
 
-    def __init__(self, buffer_size: int =100, safety_margin: int = 20):
+    def __init__(self, buffer_size: int = 100, safety_margin: int = 20):
         self.buffer_size = buffer_size
         self.safety_margin = safety_margin
         self.buffer = ""
@@ -74,66 +78,67 @@ class StreamingPIIGuardrail:
     @property
     def _pii_patterns(self):
         return {
-            'ssn': (
-                r'\b(\d{3}[-\s]?\d{2}[-\s]?\d{4})\b',
-                '[REDACTED-SSN]'
+            "ssn": (r"\b(\d{3}[-\s]?\d{2}[-\s]?\d{4})\b", "[REDACTED-SSN]"),
+            "credit_card": (
+                r"\b(?:\d{4}[-\s]?){3}\d{4}\b|\b\d{13,19}\b",
+                "[REDACTED-CREDIT-CARD]",
             ),
-            'credit_card': (
-                r'\b(?:\d{4}[-\s]?){3}\d{4}\b|\b\d{13,19}\b',
-                '[REDACTED-CREDIT-CARD]'
+            "license": (r"\b[A-Z]{2}-DL-[A-Z0-9]+\b", "[REDACTED-LICENSE]"),
+            "bank_account": (
+                r"\b(?:Bank\s+of\s+\w+\s*[-\s]*)?(?<!\d)(\d{10,12})(?!\d)\b",
+                "[REDACTED-ACCOUNT]",
             ),
-            'license': (
-                r'\b[A-Z]{2}-DL-[A-Z0-9]+\b',
-                '[REDACTED-LICENSE]'
+            "date": (
+                r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b|\b\d{1,2}/\d{1,2}/\d{4}\b|\b\d{4}-\d{2}-\d{2}\b",
+                "[REDACTED-DATE]",
             ),
-            'bank_account': (
-                r'\b(?:Bank\s+of\s+\w+\s*[-\s]*)?(?<!\d)(\d{10,12})(?!\d)\b',
-                '[REDACTED-ACCOUNT]'
-            ),
-            'date': (
-                r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b|\b\d{1,2}/\d{1,2}/\d{4}\b|\b\d{4}-\d{2}-\d{2}\b',
-                '[REDACTED-DATE]'
-            ),
-            'cvv': (
+            "cvv": (
                 r'(?:CVV:?\s*|CVV["\']\s*:\s*["\']\s*)(\d{3,4})',
-                r'CVV: [REDACTED]'
+                r"CVV: [REDACTED]",
             ),
-            'card_exp': (
+            "card_exp": (
                 r'(?:Exp(?:iry)?:?\s*|Expiry["\']\s*:\s*["\']\s*)(\d{2}/\d{2})',
-                r'Exp: [REDACTED]'
+                r"Exp: [REDACTED]",
             ),
-            'address': (
-                r'\b(\d+\s+[A-Za-z\s]+(?:Street|St\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Road|Rd\.?|Drive|Dr\.?|Lane|Ln\.?|Way|Circle|Cir\.?|Court|Ct\.?|Place|Pl\.?))\b',
-                '[REDACTED-ADDRESS]'
+            "address": (
+                r"\b(\d+\s+[A-Za-z\s]+(?:Street|St\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Road|Rd\.?|Drive|Dr\.?|Lane|Ln\.?|Way|Circle|Cir\.?|Court|Ct\.?|Place|Pl\.?))\b",
+                "[REDACTED-ADDRESS]",
             ),
-            'currency': (
-                r'\$[\d,]+\.?\d*',
-                '[REDACTED-AMOUNT]'
-            )
+            "currency": (r"\$[\d,]+\.?\d*", "[REDACTED-AMOUNT]"),
         }
 
     def _detect_and_redact_pii(self, text: str) -> str:
         """Apply all PII patterns to redact sensitive information."""
         cleaned_text = text
         for pattern_name, (pattern, replacement) in self._pii_patterns.items():
-            if pattern_name.lower() in ['cvv', 'card_exp']:
-                cleaned_text = re.sub(pattern, replacement, cleaned_text, flags=re.IGNORECASE | re.MULTILINE)
+            if pattern_name.lower() in ["cvv", "card_exp"]:
+                cleaned_text = re.sub(
+                    pattern,
+                    replacement,
+                    cleaned_text,
+                    flags=re.IGNORECASE | re.MULTILINE,
+                )
             else:
-                cleaned_text = re.sub(pattern, replacement, cleaned_text, flags=re.IGNORECASE | re.MULTILINE)
+                cleaned_text = re.sub(
+                    pattern,
+                    replacement,
+                    cleaned_text,
+                    flags=re.IGNORECASE | re.MULTILINE,
+                )
         return cleaned_text
 
     def _has_potential_pii_at_end(self, text: str) -> bool:
         """Check if text ends with a partial pattern that might be PII."""
         partial_patterns = [
-            r'\d{3}[-\s]?\d{0,2}$',  # Partial SSN
-            r'\d{4}[-\s]?\d{0,4}$',  # Partial credit card
-            r'[A-Z]{1,2}-?D?L?-?[A-Z0-9]*$',  # Partial license
-            r'\(?\d{0,3}\)?[-.\s]?\d{0,3}$',  # Partial phone
-            r'\$[\d,]*\.?\d*$',  # Partial currency
-            r'\b\d{1,4}/\d{0,2}$',  # Partial date
-            r'CVV:?\s*\d{0,3}$',  # Partial CVV
-            r'Exp(?:iry)?:?\s*\d{0,2}$',  # Partial expiry
-            r'\d+\s+[A-Za-z\s]*$',  # Partial address
+            r"\d{3}[-\s]?\d{0,2}$",  # Partial SSN
+            r"\d{4}[-\s]?\d{0,4}$",  # Partial credit card
+            r"[A-Z]{1,2}-?D?L?-?[A-Z0-9]*$",  # Partial license
+            r"\(?\d{0,3}\)?[-.\s]?\d{0,3}$",  # Partial phone
+            r"\$[\d,]*\.?\d*$",  # Partial currency
+            r"\b\d{1,4}/\d{0,2}$",  # Partial date
+            r"CVV:?\s*\d{0,3}$",  # Partial CVV
+            r"Exp(?:iry)?:?\s*\d{0,2}$",  # Partial expiry
+            r"\d+\s+[A-Za-z\s]*$",  # Partial address
         ]
 
         for pattern in partial_patterns:
@@ -152,7 +157,7 @@ class StreamingPIIGuardrail:
             safe_output_length = len(self.buffer) - self.safety_margin
 
             for i in range(safe_output_length - 1, max(0, safe_output_length - 20), -1):
-                if self.buffer[i] in ' \n\t.,;:!?':
+                if self.buffer[i] in " \n\t.,;:!?":
                     test_text = self.buffer[:i]
                     if not self._has_potential_pii_at_end(test_text):
                         safe_output_length = i
@@ -192,20 +197,51 @@ PROFILE = """
 **Annual Income:** $112,800  
 """
 
-#TODO:
-# Create ChatOpenAI client, model to use `gpt-4.1-nano` (or any other mini or nano models)
+chat_client = ChatOpenAI(
+    temperature=0.0, model="gpt-4.1-nano", api_key=SecretStr(OPENAI_API_KEY)
+)
+
 
 def main():
-    #TODO:
-    # 1. Create PresidioStreamingPIIGuardrail or StreamingPIIGuardrail
-    # 2. Create list of messages with system prompt and profile
-    # 3. Create console chat with LLM, preserve history there and while streaming filter content with streaming guardrail
-    raise NotImplementedError()
+    presidio_guardrail = PresidioStreamingPIIGuardrail()
+
+    conversation = []
+    messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=PROFILE)]
+    conversation.extend(messages)
+
+    while True:
+        user_question = input("> ").strip()
+
+        if user_question.lower() == "exit":
+            print("=" * 100)
+            exit(0)
+
+        messages.append(HumanMessage(content=user_question))
+
+        print("Bot: ", end="", flush=True)
+        response = ""
+
+        for chunk in chat_client.stream(messages):
+            if chunk.content:
+                processed_chunk = presidio_guardrail.process_chunk(chunk.content)
+
+                if processed_chunk:
+                    print(processed_chunk, end="", flush=True)
+                    response += processed_chunk
+
+        last_chunk = presidio_guardrail.finalize()
+
+        if last_chunk:
+            print(last_chunk, end="", flush=True)
+            response += last_chunk
+
+        print()
+        messages.append(AIMessage(content=response))
 
 
 main()
 
-#TODO:
+# TODO:
 # ---------
 # Create guardrail that will prevent leaks of PII (output guardrail) in streaming mode.
 # Flow:
